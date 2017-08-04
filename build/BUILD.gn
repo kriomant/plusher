@@ -1,0 +1,22 @@
+toolchain("clang_toolchain") {
+  tool("cxx") {
+    command = "clang++ {{defines}} {{include_dirs}} {{cflags}} -c {{source}} -o {{output}}"
+    description = "CXX {{output}}"
+    outputs = [
+      "{{source_out_dir}}/{{source_name_part}}.o",
+    ]
+  }
+
+  tool("link") {
+    outfile = "{{output_dir}}/{{target_output_name}}{{output_extension}}"
+    command = "clang++ {{ldflags}} {{solibs}} {{libs}} -o \"$outfile\" {{inputs}}"
+    description = "LINK $outfile"
+    default_output_dir = "{{root_out_dir}}"
+    outputs = [
+      outfile,
+    ]
+
+    lib_switch = "-l"
+    lib_dir_switch = "-L"
+  }
+}

@@ -1,0 +1,84 @@
+declare_args() {
+  llvm_config_path = "llvm-config"
+}
+
+config("llvm") {
+  cflags = exec_script("//build/llvm-config.py",
+                       [llvm_config_path, "--cxxflags"], "list lines")
+  ldflags = exec_script("//build/llvm-config.py",
+                        [llvm_config_path, "--ldflags"], "list lines")
+}
+
+executable("plusher") {
+  sources = [
+    "src/action.cc",
+    "src/action.h",
+    "src/ast_consumer.cc",
+    "src/ast_consumer.h",
+    "src/ast_visitor.cc",
+    "src/ast_visitor.h",
+    "src/plusher.cc",
+    "src/recipe.cc",
+    "src/recipe.h",
+  ]
+  configs = [ ":llvm" ]
+  cflags = [
+    "-g",
+    "-std=c++11",
+    "-fno-exceptions",
+    "-fno-rtti",
+  ]
+  libs = [
+    "LLVM",
+    "clang",
+    "clangARCMigrate",
+    "clangAST",
+    "clangASTMatchers",
+    "clangAnalysis",
+    "clangApplyReplacements",
+    "clangBasic",
+    "clangCodeGen",
+    "clangDriver",
+    "clangDynamicASTMatchers",
+    "clangEdit",
+    "clangFormat",
+    "clangFrontend",
+    "clangFrontendTool",
+    "clangIncludeFixer",
+    "clangIndex",
+    "clangLex",
+    "clangParse",
+    "clangQuery",
+    "clangRename",
+    "clangRewrite",
+    "clangRewriteFrontend",
+    "clangSema",
+    "clangSerialization",
+    "clangStaticAnalyzerCheckers",
+    "clangStaticAnalyzerCore",
+    "clangStaticAnalyzerFrontend",
+    "clangTidy",
+    "clangTidyBoostModule",
+    "clangTidyCERTModule",
+    "clangTidyCppCoreGuidelinesModule",
+    "clangTidyGoogleModule",
+    "clangTidyLLVMModule",
+    "clangTidyMiscModule",
+    "clangTidyModernizeModule",
+    "clangTidyPerformanceModule",
+    "clangTidyPlugin",
+    "clangTidyReadabilityModule",
+    "clangTidyUtils",
+    "clangTooling",
+    "clangToolingCore",
+    "findAllSymbols",
+    "lldCOFF",
+    "lldConfig",
+    "lldCore",
+    "lldDriver",
+    "lldELF",
+    "lldMachO",
+    "lldReaderWriter",
+    "lldYAML",
+  ]
+}
