@@ -2,6 +2,15 @@ declare_args() {
   llvm_config_path = "llvm-config"
 }
 
+set_defaults("executable") {
+  cflags = [
+    "-g",
+    "-std=c++11",
+    "-fno-exceptions",
+    "-fno-rtti",
+  ]
+}
+
 config("llvm") {
   cflags = exec_script("//build/llvm-config.py",
                        [llvm_config_path, "--cxxflags"], "list lines")
@@ -9,7 +18,16 @@ config("llvm") {
                         [llvm_config_path, "--ldflags"], "list lines")
 }
 
-executable("plusher") {
+config("gtest_config") {
+  include_dirs = ["third-party/gtest/googletest/include"]
+  lib_dirs = ["third-party/gtest/googlemock/gtest"]
+  libs = ["gtest"]
+}
+group("gtest") {
+  public_configs = [":gtest_config"]
+}
+
+static_library("libplusher") {
   sources = [
     "src/action.cc",
     "src/action.h",
@@ -17,17 +35,12 @@ executable("plusher") {
     "src/ast_consumer.h",
     "src/ast_visitor.cc",
     "src/ast_visitor.h",
-    "src/plusher.cc",
+    "src/lib.cc",
+    "src/lib.h",
     "src/recipe.cc",
     "src/recipe.h",
   ]
-  configs = [ ":llvm" ]
-  cflags = [
-    "-g",
-    "-std=c++11",
-    "-fno-exceptions",
-    "-fno-rtti",
-  ]
+  public_configs = [ ":llvm" ]
   libs = [
     "LLVM",
     "clang",
@@ -81,4 +94,17 @@ executable("plusher") {
     "lldReaderWriter",
     "lldYAML",
   ]
+}
+
+executable("plusher") {
+  sources = [
+    "src/plusher.cc",
+  ]
+  deps = [":libplusher"]
+}
+
+executable("tests") {
+  sources = ["src/tests.cc"]
+  deps = [":libplusher", ":gtest"]
+  configs = [":llvm"]
 }

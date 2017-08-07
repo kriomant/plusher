@@ -1,4 +1,6 @@
 toolchain("clang_toolchain") {
+  ar = "ar"
+
   tool("cxx") {
     command = "clang++ {{defines}} {{include_dirs}} {{cflags}} -c {{source}} -o {{output}}"
     description = "CXX {{output}}"
@@ -18,5 +20,21 @@ toolchain("clang_toolchain") {
 
     lib_switch = "-l"
     lib_dir_switch = "-L"
+  }
+
+  tool("stamp") {
+    command = "touch {{output}}"
+    description = "STAMP {{output}}"
+  }
+
+  tool("alink") {
+    command = "rm -f {{output}} && $ar {{arflags}} rcs {{output}} {{inputs}}"
+    description = "AR {{output}}"
+    outputs = [
+      "{{output_dir}}/{{target_output_name}}{{output_extension}}",
+    ]
+    default_output_dir = "{{target_out_dir}}"
+    default_output_extension = ".a"
+    output_prefix = "lib"
   }
 }

@@ -9,7 +9,8 @@ class Recipe;
 
 class ReplaceASTConsumer : public clang::ASTConsumer {
 public:
-  ReplaceASTConsumer(clang::CompilerInstance &ci, const Recipe& recipe);
+  ReplaceASTConsumer(clang::CompilerInstance &ci, const Recipe& recipe,
+                     std::string* result);
 
 
   void HandleTranslationUnit(clang::ASTContext &Ctx) override;
@@ -18,6 +19,7 @@ public:
 private:
     clang::CompilerInstance &ci_;
     const Recipe& recipe_;
+    std::string* const result_;
 
     clang::Rewriter rewriter_;
 };

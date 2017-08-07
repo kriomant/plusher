@@ -5,8 +5,9 @@
 using namespace clang;
 
 ReplaceASTConsumer::ReplaceASTConsumer(CompilerInstance &ci,
-                                       const Recipe& recipe)
-    : ci_(ci), recipe_(recipe),
+                                       const Recipe& recipe,
+                                       std::string* result)
+    : ci_(ci), recipe_(recipe), result_(result),
       rewriter_(ci_.getSourceManager(), ci_.getLangOpts()) {
 }
 
@@ -16,7 +17,7 @@ void ReplaceASTConsumer::HandleTranslationUnit(ASTContext &Ctx) {
       ci_.getSourceManager().getLocForStartOfFile(main_file_id);
   SourceLocation file_end =
       ci_.getSourceManager().getLocForEndOfFile(main_file_id);
-  llvm::outs() << rewriter_.getRewrittenText(SourceRange(file_start, file_end));
+  *result_ = rewriter_.getRewrittenText(SourceRange(file_start, file_end));
 }
 
 bool ReplaceASTConsumer::HandleTopLevelDecl(DeclGroupRef group) {
