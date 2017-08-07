@@ -14,7 +14,7 @@ bool ReplaceASTVisitor::VisitFunctionDecl(clang::FunctionDecl* decl) {
 
 bool ReplaceASTVisitor::VisitStmt(clang::Stmt* stmt) {
   if (recipe_.matches(stmt, context_, rewriter_)) {
-    return false;
+    return true;
   }
 
   return true;

@@ -113,7 +113,7 @@ TEST(ReplaceTest, SingleOccurence) {
     )#");
 }
 
-TEST(ReplaceTest, DISABLED_SeveralOccurences) {
+TEST(ReplaceTest, SeveralOccurences) {
   TestReplace(
     R"#(
       #include <string>
