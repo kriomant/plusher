@@ -64,7 +64,6 @@ void TestReplace(const char* recipe, const char* change) {
 
   std::string recipe_file = dirname + "/recipe.cc";
   std::string source_file = dirname + "/source.cc";
-  std::cout << "source_file: " << source_file << std::endl;
 
   std::ofstream(recipe_file) << recipe;
   std::ofstream(source_file) << c.source;
@@ -133,6 +132,28 @@ TEST(ReplaceTest, SeveralOccurences) {
         std::string().swap(str); <<<
         str.clear(); >>>
         std::string().swap(str); <<<
+      }
+    )#");
+}
+
+TEST(ReplaceTest, Expression) {
+  TestReplace(
+    R"#(
+      #include <string>
+      bool before(std::string s) {
+        return s.size() == 0;
+      }
+      bool after(std::string s) {
+        return s.empty();
+      }
+    )#",
+
+    R"#(
+      #include <string>
+      int main() {
+        std::string str;
+        bool is_empty = str.size() == 0; >>>
+        bool is_empty = str.empty(); <<<
       }
     )#");
 }

@@ -33,6 +33,10 @@ private:
   bool stmtMatches(const clang::Stmt* pattern, const clang::Stmt* stmt,
                    ArgsMap* args) const;
 
+  clang::Stmt* funcStmt(const clang::FunctionDecl* func) const;
+  clang::Stmt* beforeStmt() const;
+  clang::Stmt* afterStmt() const;
+
   std::unique_ptr<clang::ASTUnit> unit_;
   const clang::FunctionDecl* before_func_;
   const clang::FunctionDecl* after_func_;

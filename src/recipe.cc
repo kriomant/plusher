@@ -9,10 +9,15 @@
 
 #include "recipe.h"
 
+#undef NDEBUG
+#include <cassert>
+
 using namespace llvm;
 using namespace clang;
 
 namespace {
+
+constexpr bool debug = false;
 
 constexpr char kBeforeFunctionName[] = "before";
 constexpr char kAfterFunctionName[] = "after";
@@ -23,10 +28,6 @@ Error checkRecipeFunc(const FunctionDecl* func) {
 
   if (!func->hasBody())
     return make_error<StringError>("Recipe function must have body",
-                                   inconvertibleErrorCode());
-
-  if (!func->getReturnType().getTypePtr()->isVoidType())
-    return make_error<StringError>("Recipe function must have void return type",
                                    inconvertibleErrorCode());
 
   const CompoundStmt* comp = dyn_cast<CompoundStmt>(func->getBody());
@@ -42,6 +43,11 @@ compareParams(const FunctionDecl* before, const FunctionDecl* after) {
   if (before->parameters().size() != after->parameters().size())
     return make_error<StringError>("Recipe functions have different number of "
                                    "parameters",
+                                   inconvertibleErrorCode());
+
+  if (!before->getReturnType().getTypePtr() !=
+      !after->getReturnType().getTypePtr())
+    return make_error<StringError>("Recipe function must have same return type",
                                    inconvertibleErrorCode());
 
   Recipe::ParamsMap params;
@@ -147,16 +153,47 @@ Recipe::Recipe(std::unique_ptr<clang::ASTUnit> unit,
       after_func_(after_func), params_(std::move(params)) {
 }
 
+clang::Stmt* Recipe::funcStmt(const clang::FunctionDecl* func) const {
+  Stmt* stmt = *(cast<CompoundStmt>(func->getBody())->child_begin());
+  if (func->getReturnType().getTypePtr()->isVoidType())
+    return stmt;
+
+  ReturnStmt* return_stmt = cast<ReturnStmt>(stmt);
+  return return_stmt->getRetValue();
+}
+
+clang::Stmt* Recipe::beforeStmt() const {
+  return funcStmt(before_func_);
+}
+
+clang::Stmt* Recipe::afterStmt() const {
+  return funcStmt(after_func_);
+}
+
 bool Recipe::matches(clang::Stmt* stmt, ASTContext& context,
                      Rewriter& rewriter) const {
   ArgsMap args;
 
-  Stmt* before_stmt = *(cast<CompoundStmt>(before_func_->getBody())->child_begin());
+  Stmt* before_stmt = beforeStmt();
   if (!stmtMatches(before_stmt, stmt, &args))
     return false;
 
+  if (debug) {
+    dbgs() << "Statement:\n";
+    stmt->printPretty(dbgs(), nullptr, context.getPrintingPolicy(), 2);
+    dbgs() << "\nmatches:\n";
+    before_stmt->printPretty(dbgs(), nullptr,
+                             unit_->getASTContext().getPrintingPolicy(), 2);
+    dbgs() << "\nwith args:";
+    for (auto arg : args) {
+      dbgs() << "\n\t" << arg.first->getName() << ": ";
+      arg.second->printPretty(dbgs(), nullptr, context.getPrintingPolicy(), 2);
+    }
+    dbgs() << '\n';
+  }
+
   // Find all references to parameters in body of 'after' function.
-  Stmt* after_stmt = *(cast<CompoundStmt>(after_func_->getBody())->child_begin());
+  Stmt* after_stmt = afterStmt();
   std::set<const ParmVarDecl*> after_params;
   for (auto p : params_)
     after_params.insert(p.second);
@@ -173,7 +210,7 @@ bool Recipe::matches(clang::Stmt* stmt, ASTContext& context,
     repl.append(Lexer::getSourceText(CharSourceRange::getTokenRange(start, end), unit_->getSourceManager(), unit_->getLangOpts()));
 
     const ParmVarDecl* after_param = std::get<1>(ref);
-    assert(after_params != nullptr);
+    assert(after_param != nullptr);
     const Expr* arg = args.lookup(after_param);
     assert(arg != nullptr);
     repl.append(Lexer::getSourceText(CharSourceRange::getTokenRange(arg->getExprLoc()), context.getSourceManager(), context.getLangOpts()));
@@ -215,6 +252,14 @@ bool Recipe::stmtMatches(const Stmt* pattern, const Stmt* stmt,
   if (pattern->getStmtClass() != stmt->getStmtClass())
     return false;
 
+  if (debug) {
+    errs() << "Compare ====\n";
+    pattern->dump();
+    errs() << "with ----\n";
+    stmt->dump();
+    errs() << "====\n";
+  }
+
   // Use `return` inside branch when all conditions are checked and
   // there is no to match children, `break` to match children.
   switch (pattern->getStmtClass()) {
@@ -225,13 +270,13 @@ bool Recipe::stmtMatches(const Stmt* pattern, const Stmt* stmt,
     case Stmt::CallExprClass:
     case Stmt::ArraySubscriptExprClass:
     case Stmt::OMPArraySectionExprClass:
-    case Stmt::ImplicitCastExprClass:
     case Stmt::ParenExprClass:
     case Stmt::BreakStmtClass:
     case Stmt::ContinueStmtClass:
     case Stmt::NullStmtClass:
       return true;
 
+    case Stmt::ImplicitCastExprClass:
     case Stmt::CXXMemberCallExprClass:
       break;
 

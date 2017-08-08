@@ -10,6 +10,9 @@
 #include "action.h"
 #include "recipe.h"
 
+#undef NDEBUG
+#include <cassert>
+
 using namespace clang;
 using namespace clang::tooling;
 using namespace llvm;

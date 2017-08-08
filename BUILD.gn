@@ -10,6 +10,14 @@ set_defaults("executable") {
     "-fno-rtti",
   ]
 }
+set_defaults("static_library") {
+  cflags = [
+    "-g",
+    "-std=c++11",
+    "-fno-exceptions",
+    "-fno-rtti",
+  ]
+}
 
 config("llvm") {
   cflags = exec_script("//build/llvm-config.py",
