@@ -225,6 +225,26 @@ TEST(ReplaceTest, TypeOfExpressionIsChecked) {
     )#");
 }
 
+TEST(ReplaceTest, RecipeWithoutParameters) {
+  TestReplace(
+    R"#(
+      #include <string>
+      int before() {
+        return 24;
+      }
+      int after() {
+        return 42;
+      }
+    )#",
+
+    R"#(
+      #include <string>
+      int main() {
+        int i = 24; >>>
+        int i = 42; <<<
+      }
+    )#");
+}
 
 }  // namespace
 
