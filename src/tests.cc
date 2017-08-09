@@ -204,6 +204,28 @@ TEST(ReplaceTest, SubexpressionPriority) {
     )#");
 }
 
+TEST(ReplaceTest, TypeOfExpressionIsChecked) {
+  TestReplace(
+    R"#(
+      #include <string>
+      bool before(std::string s) {
+        return s.size() == 0;
+      }
+      bool after(std::string s) {
+        return s.empty();
+      }
+    )#",
+
+    R"#(
+      #include <vector>
+      int main() {
+        std::vector<int> v;
+        bool empty = v.size() == 0;
+      }
+    )#");
+}
+
+
 }  // namespace
 
 int main(int argc, char **argv) {
