@@ -158,6 +158,52 @@ TEST(ReplaceTest, Expression) {
     )#");
 }
 
+TEST(ReplaceTest, Subexpression) {
+  TestReplace(
+    R"#(
+      #include <string>
+      bool before(std::string s) {
+        return s.size() == 0;
+      }
+      bool after(std::string s) {
+        return s.empty();
+      }
+    )#",
+
+    R"#(
+      #include <string>
+      int main() {
+        std::string str;
+        bool is_empty = true && str.size() == 0; >>>
+        bool is_empty = true && str.empty(); <<<
+      }
+    )#");
+}
+
+// When subexpression is replaced, it must be surrounded by braces
+// if operation priorities require this.
+TEST(ReplaceTest, SubexpressionPriority) {
+  TestReplace(
+    R"#(
+      #include <string>
+      bool before(std::string s) {
+        return s.empty();
+      }
+      bool after(std::string s) {
+        return s.size() == 0;
+      }
+    )#",
+
+    R"#(
+      #include <string>
+      int main() {
+        std::string str;
+        bool non_empty = !str.empty(); >>>
+        bool non_empty = !(str.size() == 0); <<<
+      }
+    )#");
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {

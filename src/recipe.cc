@@ -219,6 +219,31 @@ bool Recipe::matches(clang::Stmt* stmt, ASTContext& context,
   }
   repl.append(Lexer::getSourceText(CharSourceRange::getTokenRange(start, after_stmt->getLocEnd()), unit_->getSourceManager(), unit_->getLangOpts()));
 
+  // If after body top level expression is an operator call, we must be careful
+  // about operator precedence and avoid turning `!is_zero(a)` into `!a == 0`.
+  bool wrap_with_parentheses = false;
+  BinaryOperator* after_binop = dyn_cast<BinaryOperator>(after_stmt);
+  if (after_binop) {
+    auto parents = context.getParents(*stmt);
+    assert(parents.size() == 1);
+    auto parent = *parents.begin();
+    // Wrap if parent node is either unary operation or binary operation with
+    // higher precedence than inserted expression has.
+    if (const Expr* parent_expr = parent.get<Expr>()) {
+      if (const BinaryOperator* binop = dyn_cast<BinaryOperator>(parent_expr)) {
+        if (binop->getOpcode() <= after_binop->getOpcode()) {
+          wrap_with_parentheses = true;
+        }
+      } else if (const UnaryOperator* unop = dyn_cast<UnaryOperator>(parent_expr)) {
+        wrap_with_parentheses = true;
+      }
+    }
+  }
+  if (wrap_with_parentheses) {
+    repl.insert(repl.begin(), '(');
+    repl.insert(repl.end(), ')');
+  }
+
   rewriter.ReplaceText(stmt->getSourceRange(), repl);
   return true;
 }
