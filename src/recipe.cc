@@ -3,6 +3,7 @@
 #include <clang/AST/Expr.h>
 #include <clang/AST/ExprCXX.h>
 #include <clang/AST/RecursiveASTVisitor.h>
+#include <clang/Index/USRGeneration.h>
 #include <clang/Lex/Lexer.h>
 #include <clang/Rewrite/Core/Rewriter.h>
 #include <llvm/ADT/STLExtras.h>
@@ -87,6 +88,15 @@ public:
   std::vector<std::tuple<const DeclRefExpr*, const ParmVarDecl*>>& refs_;
 };
 
+bool sameDecl(const Decl* first, const Decl* second) {
+  SmallVector<char, 128> first_buf;
+  if (index::generateUSRForDecl(first, first_buf))
+    assert(false && "can't get USR for decl");
+  SmallVector<char, 128> second_buf;
+  if (index::generateUSRForDecl(second, second_buf))
+    assert(false && "can't get USR for decl");
+  return first_buf == second_buf;
+}
 
 }
 
@@ -303,7 +313,19 @@ bool Recipe::stmtMatches(const Stmt* pattern, const Stmt* stmt,
 
     case Stmt::ImplicitCastExprClass:
     case Stmt::CXXMemberCallExprClass:
+    case Stmt::ExprWithCleanupsClass:
+    case Stmt::MaterializeTemporaryExprClass:
+    case Stmt::CXXFunctionalCastExprClass:
+    case Stmt::CXXBindTemporaryExprClass:
       break;
+
+    case Stmt::CXXConstructExprClass: {
+      const CXXConstructExpr *pctor = cast<CXXConstructExpr>(pattern);
+      const CXXConstructExpr *sctor = cast<CXXConstructExpr>(stmt);
+      if (!sameDecl(pctor->getConstructor(), sctor->getConstructor()))
+        return false;
+      break;
+    }
 
     case Stmt::CXXOperatorCallExprClass: {
       const CXXOperatorCallExpr *pop = cast<CXXOperatorCallExpr>(pattern);

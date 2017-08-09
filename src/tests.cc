@@ -246,6 +246,30 @@ TEST(ReplaceTest, RecipeWithoutParameters) {
     )#");
 }
 
+TEST(ReplaceTest, Constructor) {
+  TestReplace(
+    R"#(
+      #include <string>
+      std::string before() {
+        return std::string("");
+      }
+      std::string after() {
+        return std::string();
+      }
+    )#",
+
+    R"#(
+      #include <string>
+      int main() {
+        std::string s = std::string(""); >>>
+        std::string s = std::string(); <<<
+
+        std::string s2 = std::string("ab");
+        std::string s3 = std::string(2, ' ');
+      }
+    )#");
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
