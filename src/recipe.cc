@@ -1,4 +1,5 @@
 #include <set>
+#include <tuple>
 
 #include <clang/AST/Expr.h>
 #include <clang/AST/ExprCXX.h>
@@ -39,12 +40,135 @@ Error checkRecipeFunc(const FunctionDecl* func) {
   return Error::success();
 }
 
-Expected<Recipe::ParamsMap>
+bool templatesAreEqual(TemplateName ft, TemplateName st) {
+  if (ft.getKind() != st.getKind())
+    return false;
+
+  switch (ft.getKind()) {
+    case TemplateName::Template: {
+      SmallString<512> fb;
+      SmallString<512> sb;
+      if (index::generateUSRForDecl(ft.getAsTemplateDecl(), fb) ||
+          index::generateUSRForDecl(st.getAsTemplateDecl(), sb))
+        assert(false && "Can't generate USR");
+      return fb == sb;
+    }
+    case TemplateName::OverloadedTemplate:
+      return ft.getAsOverloadedTemplate() == st.getAsOverloadedTemplate();
+    case TemplateName::QualifiedTemplate:
+      return ft.getAsQualifiedTemplateName() == st.getAsQualifiedTemplateName();
+    case TemplateName::DependentTemplate:
+      return ft.getAsDependentTemplateName() == st.getAsDependentTemplateName();
+    case TemplateName::SubstTemplateTemplateParm:
+      return ft.getAsSubstTemplateTemplateParm() == st.getAsSubstTemplateTemplateParm();
+    case TemplateName::SubstTemplateTemplateParmPack:
+      return ft.getAsSubstTemplateTemplateParmPack() == st.getAsSubstTemplateTemplateParmPack();
+  }
+}
+
+bool typesAreEqual(QualType first, QualType second,
+                   const DenseMap<const NamedDecl*, const NamedDecl*>& mapping);
+
+bool templateArgumentsAreEqual(
+    TemplateArgument fa, TemplateArgument sa,
+    const DenseMap<const NamedDecl*, const NamedDecl*>& mapping) {
+  if (fa.getKind() != sa.getKind())
+    return false;
+
+  switch (fa.getKind()) {
+    case TemplateArgument::Null:
+      return true;
+    case TemplateArgument::Type:
+      return typesAreEqual(fa.getAsType(), sa.getAsType(), mapping);
+    case TemplateArgument::Declaration:
+      return fa.getAsDecl() == sa.getAsDecl();
+
+    case TemplateArgument::NullPtr:
+    case TemplateArgument::Integral:
+    case TemplateArgument::Template:
+    case TemplateArgument::TemplateExpansion:
+    case TemplateArgument::Expression:
+    case TemplateArgument::Pack:
+      errs() << "Unsupported template argument kind\n";
+      return false;
+  }
+}
+
+bool typesAreEqual(const Type* first, const Type* second,
+                   const DenseMap<const NamedDecl*, const NamedDecl*>& mapping) {
+  if (first == second)
+    return true;
+
+  if (first->getTypeClass() != second->getTypeClass()) {
+    return false;
+  }
+
+  switch (first->getTypeClass()) {
+    default:
+      errs() << "Unknown type class\n";
+      first->dump();
+      return false;
+
+    case Type::Elaborated: {
+      const ElaboratedType* ft = cast<ElaboratedType>(first);
+      const ElaboratedType* st = cast<ElaboratedType>(second);
+      return typesAreEqual(ft->getNamedType(), st->getNamedType(), mapping);
+    }
+
+    case Type::TemplateSpecialization: {
+      const TemplateSpecializationType* ft = cast<TemplateSpecializationType>(first);
+      const TemplateSpecializationType* st = cast<TemplateSpecializationType>(second);
+      if (!templatesAreEqual(ft->getTemplateName(), st->getTemplateName()))
+        return false;
+
+      assert(ft->getNumArgs() == st->getNumArgs());
+      for (unsigned int i = 0; i != ft->getNumArgs(); ++i) {
+        TemplateArgument fa = ft->getArg(i);
+        TemplateArgument sa = st->getArg(i);
+        if (!templateArgumentsAreEqual(fa, sa, mapping))
+          return false;
+        return true;
+      }
+    }
+
+    case Type::TemplateTypeParm: {
+      const TemplateTypeParmType* ftt = dyn_cast<TemplateTypeParmType>(first);
+      const TemplateTypeParmType* stt = dyn_cast<TemplateTypeParmType>(second);
+      return mapping.lookup(ftt->getDecl()) == stt->getDecl();
+    }
+  }
+}
+
+bool typesAreEqual(QualType first, QualType second,
+                   const DenseMap<const NamedDecl*, const NamedDecl*>& mapping) {
+  return first.getLocalFastQualifiers() == second.getLocalFastQualifiers() &&
+         typesAreEqual(first.getTypePtr(), second.getTypePtr(), mapping);
+}
+
+Expected<std::tuple<Recipe::ParamsMap, Recipe::TemplateParamsMap>>
 compareParams(const FunctionDecl* before, const FunctionDecl* after) {
   if (before->parameters().size() != after->parameters().size())
     return make_error<StringError>("Recipe functions have different number of "
                                    "parameters",
                                    inconvertibleErrorCode());
+
+  // Collect template paremeters.
+  DenseMap<const NamedDecl*, const NamedDecl*> tmpl_params;
+  if (FunctionTemplateDecl* before_tmpl = before->getDescribedFunctionTemplate()) {
+    FunctionTemplateDecl* after_tmpl = after->getDescribedFunctionTemplate();
+    assert(after_tmpl && "Both `before` and `after` must be templates (or both not)");
+
+    const TemplateParameterList* before_tmpl_params = before_tmpl->getTemplateParameters();
+    const TemplateParameterList* after_tmpl_params = after_tmpl->getTemplateParameters();
+    if (before_tmpl_params->size() != after_tmpl_params->size())
+      return make_error<StringError>("Recipe functions must have same number of template parameters",
+                                     inconvertibleErrorCode());
+
+     for (unsigned int i = 0; i != before_tmpl_params->size(); ++i) {
+       tmpl_params.try_emplace(before_tmpl_params->getParam(i),
+                               after_tmpl_params->getParam(i));
+     }
+  }
 
   if (!before->getReturnType().getTypePtr() !=
       !after->getReturnType().getTypePtr())
@@ -55,8 +179,9 @@ compareParams(const FunctionDecl* before, const FunctionDecl* after) {
   params.reserve(before->param_size());
 
   for (size_t i = 0, count = before->param_size(); i < count; ++i) {
-    if (before->getParamDecl(i)->getOriginalType() !=
-        after->getParamDecl(i)->getOriginalType()) {
+    if (!typesAreEqual(before->getParamDecl(i)->getOriginalType(),
+                       after->getParamDecl(i)->getOriginalType(),
+                       tmpl_params)) {
       return make_error<StringError>("Different param type",
                                      inconvertibleErrorCode());
     }
@@ -64,7 +189,7 @@ compareParams(const FunctionDecl* before, const FunctionDecl* after) {
     params.try_emplace(before->getParamDecl(i), after->getParamDecl(i));
   }
 
-  return params;
+  return std::make_tuple(std::move(params), std::move(tmpl_params));
 }
 
 class ParamRefVisitor : public clang::RecursiveASTVisitor<ParamRefVisitor> {
@@ -111,9 +236,13 @@ Expected<Recipe> Recipe::create(std::unique_ptr<ASTUnit> unit) {
        it != end; ++it) {
     const Decl* decl = *it;
 
+    const FunctionTemplateDecl* func_tmpl = dyn_cast<FunctionTemplateDecl>(decl);
     const FunctionDecl* func = dyn_cast<FunctionDecl>(decl);
-    if (!func)
+    if (!func_tmpl && !func)
       continue;
+
+    if (func_tmpl)
+      func = func_tmpl->getTemplatedDecl();
 
     bool in_main_file = unit->getSourceManager().isWrittenInMainFile(func->getLocation());
     if (!in_main_file)
@@ -148,19 +277,24 @@ Expected<Recipe> Recipe::create(std::unique_ptr<ASTUnit> unit) {
     return std::move(err);
 
   // Compare that argument's types are identical.
-  Expected<Recipe::ParamsMap> params = compareParams(before_func, after_func);
-  if (Error err = params.takeError())
+  auto mappings = compareParams(before_func, after_func);
+  if (Error err = mappings.takeError())
     return std::move(err);
 
-  return Recipe(std::move(unit), before_func, after_func, std::move(*params));
+  Recipe::ParamsMap& params = std::get<0>(*mappings);
+  Recipe::TemplateParamsMap& template_params = std::get<1>(*mappings);
+
+  return Recipe(std::move(unit), before_func, after_func,
+                std::move(params), std::move(template_params));
 }
 
 Recipe::Recipe(std::unique_ptr<clang::ASTUnit> unit,
                const clang::FunctionDecl* before_func,
                const clang::FunctionDecl* after_func,
-               ParamsMap params)
+               ParamsMap params, TemplateParamsMap template_params)
     : unit_(std::move(unit)), before_func_(before_func),
-      after_func_(after_func), params_(std::move(params)) {
+      after_func_(after_func), params_(std::move(params)),
+      template_params_(std::move(template_params)) {
 }
 
 clang::Stmt* Recipe::funcStmt(const clang::FunctionDecl* func) const {
@@ -183,9 +317,10 @@ clang::Stmt* Recipe::afterStmt() const {
 bool Recipe::matches(clang::Stmt* stmt, ASTContext& context,
                      Rewriter& rewriter) const {
   ArgsMap args;
+  TemplateArgsMap template_args;
 
   Stmt* before_stmt = beforeStmt();
-  if (!stmtMatches(before_stmt, stmt, &args))
+  if (!stmtMatches(before_stmt, stmt, &args, &template_args))
     return false;
 
   if (debug) {
@@ -259,7 +394,7 @@ bool Recipe::matches(clang::Stmt* stmt, ASTContext& context,
 }
 
 bool Recipe::stmtMatches(const Stmt* pattern, const Stmt* stmt,
-                         ArgsMap* args) const {
+                         ArgsMap* args, TemplateArgsMap* template_args) const {
   if (const DeclRefExpr* decl_ref = dyn_cast<DeclRefExpr>(pattern)) {
     // Pattern references some variable, it may be parameter of `before`
     // recipe function.
@@ -271,7 +406,7 @@ bool Recipe::stmtMatches(const Stmt* pattern, const Stmt* stmt,
       // Corresponding `stmt` must be expression, and it's type must match
       // that of recipe param.
       const Expr* expr = dyn_cast<Expr>(stmt);
-      if (expr && expr->getType().getAsString() == param->getOriginalType().getAsString()) {
+      if (expr && typeMatches(param->getOriginalType(), expr->getType(), template_args)) {
         if (args->try_emplace(param, expr).second)
           return true;
 
@@ -284,9 +419,6 @@ bool Recipe::stmtMatches(const Stmt* pattern, const Stmt* stmt,
     }
   }
 
-  if (pattern->getStmtClass() != stmt->getStmtClass())
-    return false;
-
   if (debug) {
     errs() << "Compare ====\n";
     pattern->dump();
@@ -295,168 +427,188 @@ bool Recipe::stmtMatches(const Stmt* pattern, const Stmt* stmt,
     errs() << "====\n";
   }
 
-  // Use `return` inside branch when all conditions are checked and
-  // there is no to match children, `break` to match children.
-  switch (pattern->getStmtClass()) {
-    default:
-      // Be on safe side: report statements of unknown kind as unmatched.
+  if (isa<CallExpr>(pattern) && isa<CXXMemberCallExpr>(stmt)) {
+    // Just compare children
+
+  } else if (isa<CXXDependentScopeMemberExpr>(pattern) && isa<MemberExpr>(stmt)) {
+    const CXXDependentScopeMemberExpr* pm = cast<CXXDependentScopeMemberExpr>(pattern);
+    const MemberExpr* sm = cast<MemberExpr>(stmt);
+    if (pm->getMember().getAsString() !=
+        sm->getMemberDecl()->getDeclName().getAsString())
       return false;
 
-    case Stmt::CallExprClass:
-    case Stmt::ArraySubscriptExprClass:
-    case Stmt::OMPArraySectionExprClass:
-    case Stmt::ParenExprClass:
-    case Stmt::BreakStmtClass:
-    case Stmt::ContinueStmtClass:
-    case Stmt::NullStmtClass:
-      return true;
+  } else if (isa<ImplicitCastExpr>(stmt) && !isa<ImplicitCastExpr>(pattern)) {
+    const ImplicitCastExpr* sc = cast<ImplicitCastExpr>(stmt);
+    return stmtMatches(pattern, sc->getSubExpr(), args, template_args);
 
-    case Stmt::ImplicitCastExprClass:
-    case Stmt::CXXMemberCallExprClass:
-    case Stmt::ExprWithCleanupsClass:
-    case Stmt::MaterializeTemporaryExprClass:
-    case Stmt::CXXFunctionalCastExprClass:
-    case Stmt::CXXBindTemporaryExprClass:
-      break;
+  } else {
 
-    case Stmt::CXXConstructExprClass: {
-      const CXXConstructExpr *pctor = cast<CXXConstructExpr>(pattern);
-      const CXXConstructExpr *sctor = cast<CXXConstructExpr>(stmt);
-      if (!sameDecl(pctor->getConstructor(), sctor->getConstructor()))
-        return false;
-      break;
-    }
+    if (pattern->getStmtClass() != stmt->getStmtClass())
+      return false;
 
-    case Stmt::CXXOperatorCallExprClass: {
-      const CXXOperatorCallExpr *pop = cast<CXXOperatorCallExpr>(pattern);
-      const CXXOperatorCallExpr *sop = cast<CXXOperatorCallExpr>(stmt);
-      if (pop->getOperator() != sop->getOperator())
-        return false;
-      break;
-    }
-
-    case Stmt::CStyleCastExprClass: {
-      const CStyleCastExpr* pexpr = cast<CStyleCastExpr>(pattern);
-      const CStyleCastExpr* sexpr = cast<CStyleCastExpr>(stmt);
-      if (pexpr->getTypeAsWritten() != sexpr->getTypeAsWritten())
-        return false;
-      break;
-    }
-
-    case Stmt::ReturnStmtClass: {
-      const ReturnStmt* pstmt = cast<ReturnStmt>(pattern);
-      const ReturnStmt* sstmt = cast<ReturnStmt>(stmt);
-      return stmtMatches(pstmt->getRetValue(), sstmt->getRetValue(), args);
-    }
-
-    case Stmt::ForStmtClass: {
-      const ForStmt* pfor = cast<ForStmt>(pattern);
-      const ForStmt* sfor = cast<ForStmt>(stmt);
-
-      return stmtMatches(pfor->getInit(), sfor->getInit(), args) &&
-             stmtMatches(pfor->getCond(), sfor->getCond(), args) &&
-             stmtMatches(pfor->getInc(), sfor->getInc(), args) &&
-             stmtMatches(pfor->getBody(), sfor->getBody(), args);
-    }
-
-    case Stmt::DoStmtClass: {
-      const DoStmt* pdo = cast<DoStmt>(pattern);
-      const DoStmt* sdo = cast<DoStmt>(stmt);
-
-      return stmtMatches(pdo->getCond(), sdo->getCond(), args) &&
-             stmtMatches(pdo->getBody(), sdo->getBody(), args);
-    }
-
-    case Stmt::WhileStmtClass: {
-      const WhileStmt* pwhile = cast<WhileStmt>(pattern);
-      const WhileStmt* swhile = cast<WhileStmt>(stmt);
-
-      return stmtMatches(pwhile->getCond(), swhile->getCond(), args) &&
-             stmtMatches(pwhile->getBody(), swhile->getBody(), args);
-    }
-
-    case Stmt::IfStmtClass: {
-      const IfStmt* pif = cast<IfStmt>(pattern);
-      const IfStmt* sif = cast<IfStmt>(stmt);
-
-      return stmtMatches(pif->getCond(), sif->getCond(), args) &&
-             stmtMatches(pif->getThen(), sif->getThen(), args) &&
-             stmtMatches(pif->getElse(), sif->getElse(), args);
-    }
-
-    case Stmt::CompoundStmtClass: {
-      const CompoundStmt* pcomp = cast<CompoundStmt>(pattern);
-      const CompoundStmt* scomp = cast<CompoundStmt>(stmt);
-
-      if (pcomp->size() != scomp->size())
+    // Use `return` inside branch when all conditions are checked and
+    // there is no to match children, `break` to match children.
+    switch (pattern->getStmtClass()) {
+      default:
+        // Be on safe side: report statements of unknown kind as unmatched.
         return false;
 
-      CompoundStmt::const_body_iterator pi = pcomp->body_begin();
-      CompoundStmt::const_body_iterator si = scomp->body_begin();
-      for (; pi != pcomp->body_end() && si != scomp->body_end(); ++pi, ++si) {
-        if (!stmtMatches(*pi, *si, args))
+      case Stmt::CallExprClass:
+      case Stmt::ArraySubscriptExprClass:
+      case Stmt::OMPArraySectionExprClass:
+      case Stmt::ParenExprClass:
+      case Stmt::BreakStmtClass:
+      case Stmt::ContinueStmtClass:
+      case Stmt::NullStmtClass:
+        return true;
+
+      case Stmt::ImplicitCastExprClass:
+      case Stmt::CXXMemberCallExprClass:
+      case Stmt::ExprWithCleanupsClass:
+      case Stmt::MaterializeTemporaryExprClass:
+      case Stmt::CXXFunctionalCastExprClass:
+      case Stmt::CXXBindTemporaryExprClass:
+        break;
+
+      case Stmt::CXXConstructExprClass: {
+        const CXXConstructExpr *pctor = cast<CXXConstructExpr>(pattern);
+        const CXXConstructExpr *sctor = cast<CXXConstructExpr>(stmt);
+        if (!sameDecl(pctor->getConstructor(), sctor->getConstructor()))
           return false;
+        break;
       }
-      return true;
-    }
 
-    case Stmt::CompoundAssignOperatorClass:
-    case Stmt::BinaryOperatorClass: {
-      const BinaryOperator* pop = cast<BinaryOperator>(pattern);
-      const BinaryOperator* sop = cast<BinaryOperator>(stmt);
-      if (pop->getOpcode() != sop->getOpcode())
-        return false;
-      break;
-    }
+      case Stmt::CXXOperatorCallExprClass: {
+        const CXXOperatorCallExpr *pop = cast<CXXOperatorCallExpr>(pattern);
+        const CXXOperatorCallExpr *sop = cast<CXXOperatorCallExpr>(stmt);
+        if (pop->getOperator() != sop->getOperator())
+          return false;
+        break;
+      }
 
-    case Stmt::CharacterLiteralClass: {
-      const CharacterLiteral* pchar = cast<CharacterLiteral>(pattern);
-      const CharacterLiteral* schar = cast<CharacterLiteral>(stmt);
-      return pchar->getValue() == schar->getValue();
-    }
+      case Stmt::CStyleCastExprClass: {
+        const CStyleCastExpr* pexpr = cast<CStyleCastExpr>(pattern);
+        const CStyleCastExpr* sexpr = cast<CStyleCastExpr>(stmt);
+        if (pexpr->getTypeAsWritten() != sexpr->getTypeAsWritten())
+          return false;
+        break;
+      }
 
-    case Stmt::DeclRefExprClass: {
-      const DeclRefExpr* pdecl = cast<DeclRefExpr>(pattern);
-      const DeclRefExpr* sdecl = cast<DeclRefExpr>(stmt);
-      return pdecl->getDecl() == sdecl->getDecl();
-    }
+      case Stmt::ReturnStmtClass: {
+        const ReturnStmt* pstmt = cast<ReturnStmt>(pattern);
+        const ReturnStmt* sstmt = cast<ReturnStmt>(stmt);
+        return stmtMatches(pstmt->getRetValue(), sstmt->getRetValue(), args, template_args);
+      }
 
-    case Stmt::IntegerLiteralClass: {
-      const IntegerLiteral* pint = cast<IntegerLiteral>(pattern);
-      const IntegerLiteral* sint = cast<IntegerLiteral>(stmt);
+      case Stmt::ForStmtClass: {
+        const ForStmt* pfor = cast<ForStmt>(pattern);
+        const ForStmt* sfor = cast<ForStmt>(stmt);
 
-      llvm::APInt pi = pint->getValue();
-      llvm::APInt si = sint->getValue();
-      return pi.getBitWidth() == si.getBitWidth() && pi == si;
-    }
+        return stmtMatches(pfor->getInit(), sfor->getInit(), args, template_args) &&
+               stmtMatches(pfor->getCond(), sfor->getCond(), args, template_args) &&
+               stmtMatches(pfor->getInc(), sfor->getInc(), args, template_args) &&
+               stmtMatches(pfor->getBody(), sfor->getBody(), args, template_args);
+      }
 
-    case Stmt::FloatingLiteralClass: {
-      const FloatingLiteral* pfloat = cast<FloatingLiteral>(pattern);
-      const FloatingLiteral* sfloat = cast<FloatingLiteral>(stmt);
-      return pfloat->getValue().bitwiseIsEqual(sfloat->getValue());
-    }
+      case Stmt::DoStmtClass: {
+        const DoStmt* pdo = cast<DoStmt>(pattern);
+        const DoStmt* sdo = cast<DoStmt>(stmt);
 
-    case Stmt::StringLiteralClass: {
-      const clang::StringLiteral* pstring = cast<clang::StringLiteral>(pattern);
-      const clang::StringLiteral* sstring = cast<clang::StringLiteral>(stmt);
-      return pstring->getBytes() == sstring->getBytes();
-    }
+        return stmtMatches(pdo->getCond(), sdo->getCond(), args, template_args) &&
+               stmtMatches(pdo->getBody(), sdo->getBody(), args, template_args);
+      }
 
-    case Stmt::MemberExprClass: {
-      const MemberExpr* pmember = cast<MemberExpr>(pattern);
-      const MemberExpr* smember = cast<MemberExpr>(stmt);
-      if (pmember->getMemberDecl()->getDeclName().getAsString() !=
-          smember->getMemberDecl()->getDeclName().getAsString())
-        return false;
-      break;
-    }
+      case Stmt::WhileStmtClass: {
+        const WhileStmt* pwhile = cast<WhileStmt>(pattern);
+        const WhileStmt* swhile = cast<WhileStmt>(stmt);
 
-    case Stmt::UnaryOperatorClass: {
-      const UnaryOperator *punary = cast<UnaryOperator>(pattern);
-      const UnaryOperator *sunary = cast<UnaryOperator>(stmt);
-      if (punary->getOpcode() != sunary->getOpcode())
-        return false;
-      break;
+        return stmtMatches(pwhile->getCond(), swhile->getCond(), args, template_args) &&
+               stmtMatches(pwhile->getBody(), swhile->getBody(), args, template_args);
+      }
+
+      case Stmt::IfStmtClass: {
+        const IfStmt* pif = cast<IfStmt>(pattern);
+        const IfStmt* sif = cast<IfStmt>(stmt);
+
+        return stmtMatches(pif->getCond(), sif->getCond(), args, template_args) &&
+               stmtMatches(pif->getThen(), sif->getThen(), args, template_args) &&
+               stmtMatches(pif->getElse(), sif->getElse(), args, template_args);
+      }
+
+      case Stmt::CompoundStmtClass: {
+        const CompoundStmt* pcomp = cast<CompoundStmt>(pattern);
+        const CompoundStmt* scomp = cast<CompoundStmt>(stmt);
+
+        if (pcomp->size() != scomp->size())
+          return false;
+
+        CompoundStmt::const_body_iterator pi = pcomp->body_begin();
+        CompoundStmt::const_body_iterator si = scomp->body_begin();
+        for (; pi != pcomp->body_end() && si != scomp->body_end(); ++pi, ++si) {
+          if (!stmtMatches(*pi, *si, args, template_args))
+            return false;
+        }
+        return true;
+      }
+
+      case Stmt::CompoundAssignOperatorClass:
+      case Stmt::BinaryOperatorClass: {
+        const BinaryOperator* pop = cast<BinaryOperator>(pattern);
+        const BinaryOperator* sop = cast<BinaryOperator>(stmt);
+        if (pop->getOpcode() != sop->getOpcode())
+          return false;
+        break;
+      }
+
+      case Stmt::CharacterLiteralClass: {
+        const CharacterLiteral* pchar = cast<CharacterLiteral>(pattern);
+        const CharacterLiteral* schar = cast<CharacterLiteral>(stmt);
+        return pchar->getValue() == schar->getValue();
+      }
+
+      case Stmt::DeclRefExprClass: {
+        const DeclRefExpr* pdecl = cast<DeclRefExpr>(pattern);
+        const DeclRefExpr* sdecl = cast<DeclRefExpr>(stmt);
+        return pdecl->getDecl() == sdecl->getDecl();
+      }
+
+      case Stmt::IntegerLiteralClass: {
+        const IntegerLiteral* pint = cast<IntegerLiteral>(pattern);
+        const IntegerLiteral* sint = cast<IntegerLiteral>(stmt);
+
+        llvm::APInt pi = pint->getValue();
+        llvm::APInt si = sint->getValue();
+        return pi.getBitWidth() == si.getBitWidth() && pi == si;
+      }
+
+      case Stmt::FloatingLiteralClass: {
+        const FloatingLiteral* pfloat = cast<FloatingLiteral>(pattern);
+        const FloatingLiteral* sfloat = cast<FloatingLiteral>(stmt);
+        return pfloat->getValue().bitwiseIsEqual(sfloat->getValue());
+      }
+
+      case Stmt::StringLiteralClass: {
+        const clang::StringLiteral* pstring = cast<clang::StringLiteral>(pattern);
+        const clang::StringLiteral* sstring = cast<clang::StringLiteral>(stmt);
+        return pstring->getBytes() == sstring->getBytes();
+      }
+
+      case Stmt::MemberExprClass: {
+        const MemberExpr* pmember = cast<MemberExpr>(pattern);
+        const MemberExpr* smember = cast<MemberExpr>(stmt);
+        if (pmember->getMemberDecl()->getDeclName().getAsString() !=
+            smember->getMemberDecl()->getDeclName().getAsString())
+          return false;
+        break;
+      }
+
+      case Stmt::UnaryOperatorClass: {
+        const UnaryOperator *punary = cast<UnaryOperator>(pattern);
+        const UnaryOperator *sunary = cast<UnaryOperator>(stmt);
+        if (punary->getOpcode() != sunary->getOpcode())
+          return false;
+        break;
+      }
     }
   }
 
@@ -466,7 +618,7 @@ bool Recipe::stmtMatches(const Stmt* pattern, const Stmt* stmt,
   Expr::const_child_iterator pi = pexpr->child_begin();
   Expr::const_child_iterator si = sexpr->child_begin();
   for (; pi != pexpr->child_end() && si != sexpr->child_end(); ++pi, ++si) {
-    if (!*pi || !*si || !stmtMatches(*pi, *si, args))
+    if (!*pi || !*si || !stmtMatches(*pi, *si, args, template_args))
       return false;
   }
 
@@ -476,4 +628,108 @@ bool Recipe::stmtMatches(const Stmt* pattern, const Stmt* stmt,
     return false;
 
   return true;
+}
+
+bool Recipe::typeMatches(const clang::Type* pattern, const clang::Type* type,
+                         TemplateArgsMap* template_args) const {
+  if (debug) {
+    dbgs() << "typeMatches\n";
+    pattern->dump();
+    type->dump();
+  }
+
+  if (pattern == type)
+    return true;
+
+  const TemplateTypeParmType* tmpl_param_type = dyn_cast<TemplateTypeParmType>(pattern);
+  if (tmpl_param_type) {
+     TemplateTypeParmDecl* decl = tmpl_param_type->getDecl();
+     assert(template_params_.lookup(decl));
+
+     const Type* existing_arg_type = template_args->lookup(decl);
+     if (existing_arg_type)
+       return type == existing_arg_type;
+
+     template_args->try_emplace(decl, type);
+     return true;
+  }
+
+  if (pattern->isDependentType())
+    return true;
+
+  if (pattern->getTypeClass() != type->getTypeClass()) {
+    return false;
+  }
+
+  switch (pattern->getTypeClass()) {
+    default:
+      errs() << "Unknown type class\n";
+      pattern->dump();
+      return false;
+
+    case Type::Elaborated: {
+      const ElaboratedType* ft = cast<ElaboratedType>(pattern);
+      const ElaboratedType* st = cast<ElaboratedType>(type);
+      return typeMatches(ft->getNamedType(), st->getNamedType(), template_args);
+    }
+
+    case Type::TemplateSpecialization: {
+      const TemplateSpecializationType* ft = cast<TemplateSpecializationType>(pattern);
+      const TemplateSpecializationType* st = cast<TemplateSpecializationType>(type);
+      if (!templatesAreEqual(ft->getTemplateName(), st->getTemplateName()))
+        return false;
+
+      assert(ft->getNumArgs() == st->getNumArgs());
+      for (unsigned int i = 0; i != ft->getNumArgs(); ++i) {
+        TemplateArgument fa = ft->getArg(i);
+        TemplateArgument sa = st->getArg(i);
+        if (!templateArgumentMatches(fa, sa, template_args))
+          return false;
+      }
+      return true;
+    }
+
+    case Type::Typedef: {
+      const TypedefType* pt = cast<TypedefType>(pattern);
+      const TypedefType* tt = cast<TypedefType>(type);
+      return typeMatches(pt->desugar(), tt->desugar(), template_args);
+    }
+
+    case Type::Builtin: {
+      const BuiltinType* pt = cast<BuiltinType>(pattern);
+      const BuiltinType* tt = cast<BuiltinType>(type);
+      return pt->getKind() == tt->getKind();
+    }
+  }
+}
+
+bool Recipe::templateArgumentMatches(
+    TemplateArgument tmpl, TemplateArgument arg,
+    TemplateArgsMap* args) const {
+  if (tmpl.getKind() != arg.getKind())
+    return false;
+
+  switch (tmpl.getKind()) {
+    case TemplateArgument::Null:
+      return true;
+    case TemplateArgument::Type:
+      return typeMatches(tmpl.getAsType(), arg.getAsType(), args);
+    case TemplateArgument::Declaration:
+      return tmpl.getAsDecl() == arg.getAsDecl();
+
+    case TemplateArgument::NullPtr:
+    case TemplateArgument::Integral:
+    case TemplateArgument::Template:
+    case TemplateArgument::TemplateExpansion:
+    case TemplateArgument::Expression:
+    case TemplateArgument::Pack:
+      errs() << "Unsupported template argument kind\n";
+      return false;
+  }
+}
+
+bool Recipe::typeMatches(QualType tmpl, QualType type,
+                         TemplateArgsMap* template_args) const {
+  return tmpl.getLocalFastQualifiers() == type.getLocalFastQualifiers() &&
+         typeMatches(tmpl.getTypePtr(), type.getTypePtr(), template_args);
 }

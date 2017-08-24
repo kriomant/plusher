@@ -270,6 +270,30 @@ TEST(ReplaceTest, Constructor) {
     )#");
 }
 
+TEST(ReplaceTest, TypeParameters) {
+  TestReplace(
+    R"#(
+      #include <vector>
+      template <typename T>
+      bool before(std::vector<T> v) {
+        return v.size() == 0;
+      }
+      template <typename T>
+      bool after(std::vector<T> v) {
+        return v.empty();
+      }
+    )#",
+
+    R"#(
+      #include <vector>
+      int main() {
+        std::vector<int> v;
+        bool is_empty = v.size() == 0; >>>
+        bool is_empty = v.empty(); <<<
+      }
+    )#");
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {

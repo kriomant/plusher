@@ -14,6 +14,8 @@ class Rewriter;
 
 class Recipe {
 public:
+  typedef llvm::DenseMap<const clang::NamedDecl*,
+                         const clang::NamedDecl*> TemplateParamsMap;
   typedef llvm::DenseMap<const clang::ParmVarDecl*,
                          const clang::ParmVarDecl*> ParamsMap;
 
@@ -24,14 +26,23 @@ public:
 private:
   typedef llvm::DenseMap<const clang::ParmVarDecl*,
                          const clang::Expr*> ArgsMap;
+  typedef llvm::DenseMap<const clang::NamedDecl*,
+                         const clang::Type*> TemplateArgsMap;
 
   Recipe(std::unique_ptr<clang::ASTUnit> unit,
          const clang::FunctionDecl* before_func,
          const clang::FunctionDecl* after_func,
-         ParamsMap params);
+         ParamsMap params, TemplateParamsMap template_params);
 
   bool stmtMatches(const clang::Stmt* pattern, const clang::Stmt* stmt,
-                   ArgsMap* args) const;
+                   ArgsMap* args, TemplateArgsMap* template_args) const;
+  bool typeMatches(clang::QualType tmpl, clang::QualType type,
+                   TemplateArgsMap* template_args) const;
+  bool typeMatches(const clang::Type* pattern, const clang::Type* type,
+                   TemplateArgsMap* template_args) const;
+  bool templateArgumentMatches(clang::TemplateArgument tmpl,
+                               clang::TemplateArgument arg,
+                               TemplateArgsMap* args) const;
 
   clang::Stmt* funcStmt(const clang::FunctionDecl* func) const;
   clang::Stmt* beforeStmt() const;
@@ -40,7 +51,8 @@ private:
   std::unique_ptr<clang::ASTUnit> unit_;
   const clang::FunctionDecl* before_func_;
   const clang::FunctionDecl* after_func_;
-  const llvm::DenseMap<const clang::ParmVarDecl*, const clang::ParmVarDecl*> params_;
+  const ParamsMap params_;
+  const TemplateParamsMap template_params_;
 };
 
 #endif  // PLUSHER_RECIPE_H_
