@@ -294,6 +294,31 @@ TEST(ReplaceTest, TypeParameters) {
     )#");
 }
 
+TEST(ReplaceTest, SeveralBeforeFunctions) {
+  TestReplace(
+    R"#(
+      #include <string>
+      bool before_size_is_zero(std::string s) {
+        return s.size() == 0;
+      }
+      bool before_not_size(std::string s) {
+        return !s.size();
+      }
+      bool after(std::string s) {
+        return s.empty();
+      }
+    )#",
+
+    R"#(
+      #include <string>
+      int main() {
+        std::string v;
+        bool empty = v.size() == 0 || !v.size(); >>>
+        bool empty = v.empty() || v.empty(); <<<
+      }
+    )#");
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {

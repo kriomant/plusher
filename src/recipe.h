@@ -24,35 +24,46 @@ public:
                clang::Rewriter& rewriter) const;
 
 private:
+  struct BeforeFunc {
+    BeforeFunc(const clang::FunctionDecl *func, ParamsMap params_map,
+               TemplateParamsMap template_params_map);
+
+    const clang::FunctionDecl *func;
+    const ParamsMap params_map;
+    const TemplateParamsMap template_params_map;
+  };
+
   typedef llvm::DenseMap<const clang::ParmVarDecl*,
                          const clang::Expr*> ArgsMap;
   typedef llvm::DenseMap<const clang::NamedDecl*,
                          const clang::Type*> TemplateArgsMap;
 
   Recipe(std::unique_ptr<clang::ASTUnit> unit,
-         const clang::FunctionDecl* before_func,
-         const clang::FunctionDecl* after_func,
-         ParamsMap params, TemplateParamsMap template_params);
+         std::vector<BeforeFunc> before_funcs,
+         const clang::FunctionDecl* after_func);
 
-  bool stmtMatches(const clang::Stmt* pattern, const clang::Stmt* stmt,
-                   ArgsMap* args, TemplateArgsMap* template_args) const;
+  bool funcMatches(const BeforeFunc &func, clang::Stmt *stmt,
+                   clang::ASTContext &context, clang::Rewriter &rewriter) const;
+  bool stmtMatches(const clang::Stmt *pattern, const clang::Stmt *stmt,
+                   const ParamsMap& params,
+                   const TemplateParamsMap& template_params,
+                   ArgsMap *args, TemplateArgsMap *template_args) const;
   bool typeMatches(clang::QualType tmpl, clang::QualType type,
+                   const TemplateParamsMap& template_params,
                    TemplateArgsMap* template_args) const;
   bool typeMatches(const clang::Type* pattern, const clang::Type* type,
+                   const TemplateParamsMap& template_params,
                    TemplateArgsMap* template_args) const;
   bool templateArgumentMatches(clang::TemplateArgument tmpl,
                                clang::TemplateArgument arg,
+                               const TemplateParamsMap& template_params,
                                TemplateArgsMap* args) const;
 
   clang::Stmt* funcStmt(const clang::FunctionDecl* func) const;
-  clang::Stmt* beforeStmt() const;
-  clang::Stmt* afterStmt() const;
 
   std::unique_ptr<clang::ASTUnit> unit_;
-  const clang::FunctionDecl* before_func_;
+  const std::vector<BeforeFunc> before_funcs_;
   const clang::FunctionDecl* after_func_;
-  const ParamsMap params_;
-  const TemplateParamsMap template_params_;
 };
 
 #endif  // PLUSHER_RECIPE_H_

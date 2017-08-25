@@ -22,6 +22,7 @@ namespace {
 constexpr bool debug = false;
 
 constexpr char kBeforeFunctionName[] = "before";
+constexpr char kBeforeFunctionPrefix[] = "before_";
 constexpr char kAfterFunctionName[] = "after";
 
 /// \brief Checks that recipe function has expected signature.
@@ -229,7 +230,7 @@ bool sameDecl(const Decl* first, const Decl* second) {
 Expected<Recipe> Recipe::create(std::unique_ptr<ASTUnit> unit) {
   // Search top-level declarations in main file for `before` and `after`
   // functions.
-  const FunctionDecl* before_func = nullptr;
+  std::vector<const FunctionDecl*> before_funcs;
   const FunctionDecl* after_func = nullptr;
 
   for (auto it = unit->top_level_begin(), end = unit->top_level_end();
@@ -248,11 +249,9 @@ Expected<Recipe> Recipe::create(std::unique_ptr<ASTUnit> unit) {
     if (!in_main_file)
       continue;
 
-    if (func->getName() == kBeforeFunctionName) {
-      if (before_func)
-        return make_error<StringError>("Duplicate 'before' function",
-                                       inconvertibleErrorCode());
-      before_func = func;
+    if (func->getName() == kBeforeFunctionName ||
+        func->getName().startswith(kBeforeFunctionPrefix)) {
+      before_funcs.push_back(func);
 
     } else if (func->getName() == kAfterFunctionName) {
       if (after_func)
@@ -262,39 +261,40 @@ Expected<Recipe> Recipe::create(std::unique_ptr<ASTUnit> unit) {
     }
   }
 
-  if (!before_func)
-    return make_error<StringError>("No 'before' function found",
+  if (before_funcs.empty())
+    return make_error<StringError>("No 'before'/'before_*' functions found",
                                    inconvertibleErrorCode());
   if (!after_func)
     return make_error<StringError>("No 'after' function found",
                                    inconvertibleErrorCode());
 
-  // Both functions are found, check requirements
-  if (Error err = checkRecipeFunc(before_func))
-    return std::move(err);
-
+  // Both 'before' and 'after' functions are found, check requirements
   if (Error err = checkRecipeFunc(after_func))
     return std::move(err);
 
-  // Compare that argument's types are identical.
-  auto mappings = compareParams(before_func, after_func);
-  if (Error err = mappings.takeError())
-    return std::move(err);
+  std::vector<BeforeFunc> funcs;
+  for (const FunctionDecl* before_func : before_funcs) {
+    if (Error err = checkRecipeFunc(before_func))
+      return std::move(err);
 
-  Recipe::ParamsMap& params = std::get<0>(*mappings);
-  Recipe::TemplateParamsMap& template_params = std::get<1>(*mappings);
+    // Compare that argument's types are identical.
+    auto mappings = compareParams(before_func, after_func);
+    if (Error err = mappings.takeError())
+      return std::move(err);
 
-  return Recipe(std::move(unit), before_func, after_func,
-                std::move(params), std::move(template_params));
+    Recipe::ParamsMap& params = std::get<0>(*mappings);
+    Recipe::TemplateParamsMap& template_params = std::get<1>(*mappings);
+    funcs.emplace_back(before_func, std::move(params), std::move(template_params));
+  }
+
+  return Recipe(std::move(unit), std::move(funcs), after_func);
 }
 
 Recipe::Recipe(std::unique_ptr<clang::ASTUnit> unit,
-               const clang::FunctionDecl* before_func,
-               const clang::FunctionDecl* after_func,
-               ParamsMap params, TemplateParamsMap template_params)
-    : unit_(std::move(unit)), before_func_(before_func),
-      after_func_(after_func), params_(std::move(params)),
-      template_params_(std::move(template_params)) {
+               std::vector<BeforeFunc> before_funcs,
+               const clang::FunctionDecl* after_func)
+    : unit_(std::move(unit)), before_funcs_(std::move(before_funcs)),
+      after_func_(after_func) {
 }
 
 clang::Stmt* Recipe::funcStmt(const clang::FunctionDecl* func) const {
@@ -306,21 +306,26 @@ clang::Stmt* Recipe::funcStmt(const clang::FunctionDecl* func) const {
   return return_stmt->getRetValue();
 }
 
-clang::Stmt* Recipe::beforeStmt() const {
-  return funcStmt(before_func_);
-}
-
-clang::Stmt* Recipe::afterStmt() const {
-  return funcStmt(after_func_);
-}
-
 bool Recipe::matches(clang::Stmt* stmt, ASTContext& context,
                      Rewriter& rewriter) const {
+  for (const BeforeFunc& before_func : before_funcs_) {
+    if (funcMatches(before_func, stmt, context, rewriter)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool Recipe::funcMatches(const BeforeFunc &func, clang::Stmt *stmt,
+                         ASTContext &context, Rewriter &rewriter) const {
   ArgsMap args;
   TemplateArgsMap template_args;
 
-  Stmt* before_stmt = beforeStmt();
-  if (!stmtMatches(before_stmt, stmt, &args, &template_args))
+  Stmt* before_stmt = funcStmt(func.func);
+  if (!stmtMatches(before_stmt, stmt,
+                   func.params_map, func.template_params_map,
+                   &args, &template_args))
     return false;
 
   if (debug) {
@@ -338,9 +343,9 @@ bool Recipe::matches(clang::Stmt* stmt, ASTContext& context,
   }
 
   // Find all references to parameters in body of 'after' function.
-  Stmt* after_stmt = afterStmt();
+  Stmt* after_stmt = funcStmt(after_func_);
   std::set<const ParmVarDecl*> after_params;
-  for (auto p : params_)
+  for (auto p : func.params_map)
     after_params.insert(p.second);
   std::vector<std::tuple<const DeclRefExpr*, const ParmVarDecl*>> refs;
   ParamRefVisitor refs_visitor(after_params, refs);
@@ -394,19 +399,22 @@ bool Recipe::matches(clang::Stmt* stmt, ASTContext& context,
 }
 
 bool Recipe::stmtMatches(const Stmt* pattern, const Stmt* stmt,
+                         const ParamsMap& params,
+                         const TemplateParamsMap& template_params,
                          ArgsMap* args, TemplateArgsMap* template_args) const {
   if (const DeclRefExpr* decl_ref = dyn_cast<DeclRefExpr>(pattern)) {
     // Pattern references some variable, it may be parameter of `before`
     // recipe function.
     if (const ParmVarDecl* param_decl = dyn_cast<ParmVarDecl>(decl_ref->getDecl())) {
-      ParamsMap::const_iterator it = params_.find(param_decl);
-      assert(it != params_.end() && "Recipe function may refer to params only");
+      ParamsMap::const_iterator it = params.find(param_decl);
+      assert(it != params.end() && "Recipe function may refer to params only");
       const ParmVarDecl* param = it->second;
 
       // Corresponding `stmt` must be expression, and it's type must match
       // that of recipe param.
       const Expr* expr = dyn_cast<Expr>(stmt);
-      if (expr && typeMatches(param->getOriginalType(), expr->getType(), template_args)) {
+      if (expr && typeMatches(param->getOriginalType(), expr->getType(),
+                              template_params, template_args)) {
         if (args->try_emplace(param, expr).second)
           return true;
 
@@ -439,7 +447,8 @@ bool Recipe::stmtMatches(const Stmt* pattern, const Stmt* stmt,
 
   } else if (isa<ImplicitCastExpr>(stmt) && !isa<ImplicitCastExpr>(pattern)) {
     const ImplicitCastExpr* sc = cast<ImplicitCastExpr>(stmt);
-    return stmtMatches(pattern, sc->getSubExpr(), args, template_args);
+    return stmtMatches(pattern, sc->getSubExpr(), params, template_params,
+                       args, template_args);
 
   } else {
 
@@ -497,42 +506,54 @@ bool Recipe::stmtMatches(const Stmt* pattern, const Stmt* stmt,
       case Stmt::ReturnStmtClass: {
         const ReturnStmt* pstmt = cast<ReturnStmt>(pattern);
         const ReturnStmt* sstmt = cast<ReturnStmt>(stmt);
-        return stmtMatches(pstmt->getRetValue(), sstmt->getRetValue(), args, template_args);
+        return stmtMatches(pstmt->getRetValue(), sstmt->getRetValue(),
+                           params, template_params, args, template_args);
       }
 
       case Stmt::ForStmtClass: {
         const ForStmt* pfor = cast<ForStmt>(pattern);
         const ForStmt* sfor = cast<ForStmt>(stmt);
 
-        return stmtMatches(pfor->getInit(), sfor->getInit(), args, template_args) &&
-               stmtMatches(pfor->getCond(), sfor->getCond(), args, template_args) &&
-               stmtMatches(pfor->getInc(), sfor->getInc(), args, template_args) &&
-               stmtMatches(pfor->getBody(), sfor->getBody(), args, template_args);
+        return stmtMatches(pfor->getInit(), sfor->getInit(),
+                           params, template_params, args, template_args) &&
+               stmtMatches(pfor->getCond(), sfor->getCond(),
+                           params, template_params, args, template_args) &&
+               stmtMatches(pfor->getInc(), sfor->getInc(),
+                           params, template_params, args, template_args) &&
+               stmtMatches(pfor->getBody(), sfor->getBody(),
+                           params, template_params, args, template_args);
       }
 
       case Stmt::DoStmtClass: {
         const DoStmt* pdo = cast<DoStmt>(pattern);
         const DoStmt* sdo = cast<DoStmt>(stmt);
 
-        return stmtMatches(pdo->getCond(), sdo->getCond(), args, template_args) &&
-               stmtMatches(pdo->getBody(), sdo->getBody(), args, template_args);
+        return stmtMatches(pdo->getCond(), sdo->getCond(),
+                           params, template_params, args, template_args) &&
+               stmtMatches(pdo->getBody(), sdo->getBody(),
+                           params, template_params, args, template_args);
       }
 
       case Stmt::WhileStmtClass: {
         const WhileStmt* pwhile = cast<WhileStmt>(pattern);
         const WhileStmt* swhile = cast<WhileStmt>(stmt);
 
-        return stmtMatches(pwhile->getCond(), swhile->getCond(), args, template_args) &&
-               stmtMatches(pwhile->getBody(), swhile->getBody(), args, template_args);
+        return stmtMatches(pwhile->getCond(), swhile->getCond(),
+                           params, template_params, args, template_args) &&
+               stmtMatches(pwhile->getBody(), swhile->getBody(),
+                           params, template_params, args, template_args);
       }
 
       case Stmt::IfStmtClass: {
         const IfStmt* pif = cast<IfStmt>(pattern);
         const IfStmt* sif = cast<IfStmt>(stmt);
 
-        return stmtMatches(pif->getCond(), sif->getCond(), args, template_args) &&
-               stmtMatches(pif->getThen(), sif->getThen(), args, template_args) &&
-               stmtMatches(pif->getElse(), sif->getElse(), args, template_args);
+        return stmtMatches(pif->getCond(), sif->getCond(),
+                           params, template_params, args, template_args) &&
+               stmtMatches(pif->getThen(), sif->getThen(),
+                           params, template_params, args, template_args) &&
+               stmtMatches(pif->getElse(), sif->getElse(),
+                           params, template_params, args, template_args);
       }
 
       case Stmt::CompoundStmtClass: {
@@ -545,7 +566,7 @@ bool Recipe::stmtMatches(const Stmt* pattern, const Stmt* stmt,
         CompoundStmt::const_body_iterator pi = pcomp->body_begin();
         CompoundStmt::const_body_iterator si = scomp->body_begin();
         for (; pi != pcomp->body_end() && si != scomp->body_end(); ++pi, ++si) {
-          if (!stmtMatches(*pi, *si, args, template_args))
+          if (!stmtMatches(*pi, *si, params, template_params, args, template_args))
             return false;
         }
         return true;
@@ -618,7 +639,8 @@ bool Recipe::stmtMatches(const Stmt* pattern, const Stmt* stmt,
   Expr::const_child_iterator pi = pexpr->child_begin();
   Expr::const_child_iterator si = sexpr->child_begin();
   for (; pi != pexpr->child_end() && si != sexpr->child_end(); ++pi, ++si) {
-    if (!*pi || !*si || !stmtMatches(*pi, *si, args, template_args))
+    if (!*pi || !*si ||
+        !stmtMatches(*pi, *si, params, template_params, args, template_args))
       return false;
   }
 
@@ -631,6 +653,7 @@ bool Recipe::stmtMatches(const Stmt* pattern, const Stmt* stmt,
 }
 
 bool Recipe::typeMatches(const clang::Type* pattern, const clang::Type* type,
+                         const TemplateParamsMap& template_params,
                          TemplateArgsMap* template_args) const {
   if (debug) {
     dbgs() << "typeMatches\n";
@@ -644,7 +667,7 @@ bool Recipe::typeMatches(const clang::Type* pattern, const clang::Type* type,
   const TemplateTypeParmType* tmpl_param_type = dyn_cast<TemplateTypeParmType>(pattern);
   if (tmpl_param_type) {
      TemplateTypeParmDecl* decl = tmpl_param_type->getDecl();
-     assert(template_params_.lookup(decl));
+     assert(template_params.lookup(decl));
 
      const Type* existing_arg_type = template_args->lookup(decl);
      if (existing_arg_type)
@@ -670,7 +693,7 @@ bool Recipe::typeMatches(const clang::Type* pattern, const clang::Type* type,
     case Type::Elaborated: {
       const ElaboratedType* ft = cast<ElaboratedType>(pattern);
       const ElaboratedType* st = cast<ElaboratedType>(type);
-      return typeMatches(ft->getNamedType(), st->getNamedType(), template_args);
+      return typeMatches(ft->getNamedType(), st->getNamedType(), template_params, template_args);
     }
 
     case Type::TemplateSpecialization: {
@@ -683,7 +706,7 @@ bool Recipe::typeMatches(const clang::Type* pattern, const clang::Type* type,
       for (unsigned int i = 0; i != ft->getNumArgs(); ++i) {
         TemplateArgument fa = ft->getArg(i);
         TemplateArgument sa = st->getArg(i);
-        if (!templateArgumentMatches(fa, sa, template_args))
+        if (!templateArgumentMatches(fa, sa, template_params, template_args))
           return false;
       }
       return true;
@@ -692,7 +715,7 @@ bool Recipe::typeMatches(const clang::Type* pattern, const clang::Type* type,
     case Type::Typedef: {
       const TypedefType* pt = cast<TypedefType>(pattern);
       const TypedefType* tt = cast<TypedefType>(type);
-      return typeMatches(pt->desugar(), tt->desugar(), template_args);
+      return typeMatches(pt->desugar(), tt->desugar(), template_params, template_args);
     }
 
     case Type::Builtin: {
@@ -705,7 +728,7 @@ bool Recipe::typeMatches(const clang::Type* pattern, const clang::Type* type,
 
 bool Recipe::templateArgumentMatches(
     TemplateArgument tmpl, TemplateArgument arg,
-    TemplateArgsMap* args) const {
+    const TemplateParamsMap& template_params, TemplateArgsMap* args) const {
   if (tmpl.getKind() != arg.getKind())
     return false;
 
@@ -713,7 +736,7 @@ bool Recipe::templateArgumentMatches(
     case TemplateArgument::Null:
       return true;
     case TemplateArgument::Type:
-      return typeMatches(tmpl.getAsType(), arg.getAsType(), args);
+      return typeMatches(tmpl.getAsType(), arg.getAsType(), template_params, args);
     case TemplateArgument::Declaration:
       return tmpl.getAsDecl() == arg.getAsDecl();
 
@@ -729,7 +752,15 @@ bool Recipe::templateArgumentMatches(
 }
 
 bool Recipe::typeMatches(QualType tmpl, QualType type,
+                         const TemplateParamsMap& template_params,
                          TemplateArgsMap* template_args) const {
   return tmpl.getLocalFastQualifiers() == type.getLocalFastQualifiers() &&
-         typeMatches(tmpl.getTypePtr(), type.getTypePtr(), template_args);
+         typeMatches(tmpl.getTypePtr(), type.getTypePtr(),
+                     template_params, template_args);
 }
+
+Recipe::BeforeFunc::BeforeFunc(const clang::FunctionDecl *func,
+                               Recipe::ParamsMap params_map,
+                               Recipe::TemplateParamsMap template_params_map)
+    : func(func), params_map(std::move(params_map)),
+      template_params_map(std::move(template_params_map)) {}
