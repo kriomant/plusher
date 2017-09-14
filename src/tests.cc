@@ -70,13 +70,14 @@ void TestReplace(const char* recipe, const char* change) {
 
   const char* const args[] = {
     "--", "-std=c++11",
-    "-I/usr/local/opt/llvm/include/c++/v1",
-    "-I/usr/local/Cellar/llvm/4.0.1/lib/clang/4.0.1/include" };
+    "-I/usr/local/Cellar/llvm/5.0.0/include/c++/v1",
+    "-I/usr/local/Cellar/llvm/5.0.0/lib/clang/5.0.0/include" };
 
   int argc = sizeof(args) / sizeof(args[0]);
+  std::string error;
   std::unique_ptr<clang::tooling::CompilationDatabase> compilations(
       clang::tooling::FixedCompilationDatabase::loadFromCommandLine(
-          argc, args));
+          argc, args, error));
 
   std::string result;
   bool success = ProcessFile(*compilations, {source_file}, recipe_file,

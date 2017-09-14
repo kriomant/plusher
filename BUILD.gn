@@ -70,7 +70,6 @@ static_library("libplusher") {
     "clangLex",
     "clangParse",
     "clangQuery",
-    "clangRename",
     "clangRewrite",
     "clangRewriteFrontend",
     "clangSema",
