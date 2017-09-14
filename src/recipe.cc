@@ -16,6 +16,7 @@
 
 using namespace llvm;
 using namespace clang;
+using namespace clang::tooling;
 
 namespace {
 
@@ -306,10 +307,10 @@ clang::Stmt* Recipe::funcStmt(const clang::FunctionDecl* func) const {
   return return_stmt->getRetValue();
 }
 
-bool Recipe::matches(clang::Stmt* stmt, ASTContext& context,
-                     Rewriter& rewriter) const {
-  for (const BeforeFunc& before_func : before_funcs_) {
-    if (funcMatches(before_func, stmt, context, rewriter)) {
+bool Recipe::tryApply(clang::Stmt *stmt, ASTContext &context,
+                      std::map<std::string, Replacements>* replacements) const {
+  for (const BeforeFunc &before_func : before_funcs_) {
+    if (funcMatches(before_func, stmt, context, replacements)) {
       return true;
     }
   }
@@ -318,7 +319,8 @@ bool Recipe::matches(clang::Stmt* stmt, ASTContext& context,
 }
 
 bool Recipe::funcMatches(const BeforeFunc &func, clang::Stmt *stmt,
-                         ASTContext &context, Rewriter &rewriter) const {
+                         ASTContext &context,
+                         std::map<std::string, Replacements>* replacements) const {
   ArgsMap args;
   TemplateArgsMap template_args;
 
@@ -394,7 +396,9 @@ bool Recipe::funcMatches(const BeforeFunc &func, clang::Stmt *stmt,
     repl.insert(repl.end(), ')');
   }
 
-  rewriter.ReplaceText(stmt->getSourceRange(), repl);
+  Replacement replacement(context.getSourceManager(), stmt, repl);
+  if (Error err = (*replacements)[replacement.getFilePath()].add(replacement))
+    assert(false && "failed to add replacement");
   return true;
 }
 

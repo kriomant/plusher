@@ -5,7 +5,9 @@
 
 #include <clang/AST/ASTContext.h>
 #include <clang/Frontend/ASTUnit.h>
+#include <clang/Tooling/Core/Replacement.h>
 #include <llvm/ADT/DenseMap.h>
+#include <llvm/ADT/Optional.h>
 #include <llvm/Support/Error.h>
 
 namespace clang {
@@ -20,8 +22,10 @@ public:
                          const clang::ParmVarDecl*> ParamsMap;
 
   static llvm::Expected<Recipe> create(std::unique_ptr<clang::ASTUnit> unit);
-  bool matches(clang::Stmt* stmt, clang::ASTContext& context,
-               clang::Rewriter& rewriter) const;
+
+  bool tryApply(
+      clang::Stmt* stmt, clang::ASTContext& context,
+      std::map<std::string, clang::tooling::Replacements>* replacements) const;
 
 private:
   struct BeforeFunc {
@@ -42,8 +46,9 @@ private:
          std::vector<BeforeFunc> before_funcs,
          const clang::FunctionDecl* after_func);
 
-  bool funcMatches(const BeforeFunc &func, clang::Stmt *stmt,
-                   clang::ASTContext &context, clang::Rewriter &rewriter) const;
+  bool funcMatches(
+      const BeforeFunc &func, clang::Stmt *stmt, clang::ASTContext &context,
+      std::map<std::string, clang::tooling::Replacements>* replacements) const;
   bool stmtMatches(const clang::Stmt *pattern, const clang::Stmt *stmt,
                    const ParamsMap& params,
                    const TemplateParamsMap& template_params,

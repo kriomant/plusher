@@ -4,7 +4,5 @@
 #include "lib.h"
 
 int main(int argc, const char **argv) {
-  std::string result;
-  if (ProcessFile(argc, argv, &result))
-    std::cout << result;
+  return ProcessFiles(argc, argv) ? 0 : 1;
 }

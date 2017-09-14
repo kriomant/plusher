@@ -4,6 +4,7 @@
 #include "clang/Frontend/FrontendActions.h"
 #include "clang/Tooling/CommonOptionsParser.h"
 #include "clang/Tooling/CompilationDatabase.h"
+#include "clang/Tooling/Refactoring.h"
 #include "clang/Tooling/Tooling.h"
 #include "llvm/Support/CommandLine.h"
 
@@ -32,17 +33,17 @@ static cl::extrahelp CommonHelp(CommonOptionsParser::HelpMessage);
 // A help message for this specific tool can be added afterwards.
 static cl::extrahelp MoreHelp("\nMore help text...");
 
-bool ProcessFile(int argc, const char **argv, std::string* result) {
+bool ProcessFiles(int argc, const char **argv) {
   CommonOptionsParser OptionsParser(argc, argv, PlusherCategory);
-  return ProcessFile(OptionsParser.getCompilations(),
-                     OptionsParser.getSourcePathList(),
-                     RecipeFile, result);
+  return ProcessFiles(OptionsParser.getCompilations(),
+                      OptionsParser.getSourcePathList(),
+                      RecipeFile, nullptr);
 }
 
-bool ProcessFile(const tooling::CompilationDatabase& compilations,
-                 const std::vector<std::string>& source_paths,
-                 const std::string& recipe_path,
-                 std::string* result) {
+bool ProcessFiles(const tooling::CompilationDatabase& compilations,
+                  const std::vector<std::string>& source_paths,
+                  const std::string& recipe_path,
+                  std::string* result) {
   // Parse and analyze recipe.
   ClangTool RecipeTool(compilations,
                        ArrayRef<std::string>(recipe_path));
@@ -57,8 +58,27 @@ bool ProcessFile(const tooling::CompilationDatabase& compilations,
     return 1;
   }
 
-  ClangTool Tool(compilations, source_paths);
-  ReplaceActionFactory action_factory(*recipe, result);
+  RefactoringTool Tool(compilations, source_paths);
+  ReplaceActionFactory action_factory(*recipe, &Tool.getReplacements(), result);
   int code = Tool.run(&action_factory);
-  return code == 0;
+  if (code != 0)
+    return false;
+
+  if (!result) {
+    // Serialization format is documented in tools/clang/scripts/run_tool.py
+    llvm::outs() << "==== BEGIN EDITS ====\n";
+    for (const auto& file_repls : Tool.getReplacements()) {
+      for (const auto& r : file_repls.second) {
+        std::string replacement_text = r.getReplacementText().str();
+        std::replace(replacement_text.begin(), replacement_text.end(), '\n',
+                     '\0');
+        llvm::outs() << "r:::" << r.getFilePath() << ":::" << r.getOffset()
+                     << ":::" << r.getLength() << ":::" << replacement_text
+                     << "\n";
+      }
+    }
+    llvm::outs() << "==== END EDITS ====\n";
+  }
+
+  return true;
 }

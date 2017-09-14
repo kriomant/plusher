@@ -2,10 +2,10 @@
 
 #include "recipe.h"
 
-ReplaceASTVisitor::ReplaceASTVisitor(const Recipe& recipe,
-                                     clang::ASTContext& context,
-                                     clang::Rewriter& rewriter)
-    : recipe_(recipe), context_(context), rewriter_(rewriter)
+ReplaceASTVisitor::ReplaceASTVisitor(
+    const Recipe &recipe, clang::ASTContext &context,
+    std::map<std::string, clang::tooling::Replacements>* replacements)
+    : recipe_(recipe), context_(context), replacements_(replacements)
 {}
 
 bool ReplaceASTVisitor::VisitFunctionDecl(clang::FunctionDecl* decl) {
@@ -13,7 +13,7 @@ bool ReplaceASTVisitor::VisitFunctionDecl(clang::FunctionDecl* decl) {
 }
 
 bool ReplaceASTVisitor::VisitStmt(clang::Stmt* stmt) {
-  if (recipe_.matches(stmt, context_, rewriter_)) {
+  if (recipe_.tryApply(stmt, context_, replacements_)) {
     return true;
   }
 

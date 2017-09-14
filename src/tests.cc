@@ -80,8 +80,8 @@ void TestReplace(const char* recipe, const char* change) {
           argc, args, error));
 
   std::string result;
-  bool success = ProcessFile(*compilations, {source_file}, recipe_file,
-                             &result);
+  bool success = ProcessFiles(*compilations, {source_file}, recipe_file,
+                              &result);
 
   ASSERT_EQ(0, unlink(recipe_file.c_str()));
   ASSERT_EQ(0, unlink(source_file.c_str()));
